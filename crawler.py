@@ -9,17 +9,17 @@ from datetime import datetime
 # =============================================
 TARGET_PRODUCTS = [
     "조선미녀",
-    "라로슈포제",
-    "아니스프리",
-    "바이오더마",
-    "스킨아쿠아",
+    "라운드랩",
+    "달바",
+    "아누아",
+    "메디큐브",
 ]
 
 # Apify Actor ID (올리브영 스크래퍼)
-ACTOR_ID = "styleindexamerica~kr-oliveyoung-scraper"
+ACTOR_ID = "kitschy_marigold/oliveyoung-ranking-scraper"
 
 # GitHub Actions Secret에서 API 토큰 읽기
-APIFY_TOKEN = os.environ.get("APIFY_TOKEN")
+APIFY_TOKEN = os.environ.get("apify_api_PtfnViWORZx71l9nXKLdVjnHFZsWuW4ogrvI")
 
 DATA_FILE = "data.json"
 
