@@ -1,10 +1,6 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from bs4 import BeautifulSoup
+import requests
 import json
+import os
 import time
 from datetime import datetime
 
@@ -19,107 +15,152 @@ TARGET_PRODUCTS = [
     "스킨아쿠아",
 ]
 
-# 올리브영 선케어 카테고리 URL (랭킹순)
-BASE_URL = (
-    "https://www.oliveyoung.co.kr/store/display/getMCategoryList.do"
-    "?dispCatNo=100000100010013&prdSort=01&rowsPerPage=24&pageIdx={page}"
-)
+# Apify Actor ID (올리브영 스크래퍼)
+ACTOR_ID = "styleindexamerica~kr-oliveyoung-scraper"
+
+# GitHub Actions Secret에서 API 토큰 읽기
+APIFY_TOKEN = os.environ.get("APIFY_TOKEN")
 
 DATA_FILE = "data.json"
 
 
-def get_driver():
-    """헤드리스 Chrome 드라이버 설정 (봇 감지 우회)"""
-    options = Options()
-    options.add_argument("--headless")           # 화면 없이 실행
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
-    options.add_argument(
-        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
-    options.add_argument("--lang=ko-KR")
-    driver = webdriver.Chrome(options=options)
-    # navigator.webdriver 속성 숨기기
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    return driver
+def run_apify_actor():
+    """Apify Actor를 실행하고 결과 데이터를 반환"""
+    if not APIFY_TOKEN:
+        print("❌ APIFY_TOKEN 환경변수가 없습니다.")
+        print("   GitHub → Settings → Secrets → APIFY_TOKEN 을 등록해주세요.")
+        return None
 
+    print("🚀 Apify Actor 실행 중...")
 
-def fetch_ranking():
-    """Selenium으로 올리브영 선케어 1~5페이지 크롤링"""
-    all_products = []
-    driver = get_driver()
+    # Actor 실행 요청 (선케어 카테고리, 랭킹순, 1~5페이지)
+    run_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/run-sync-get-dataset-items"
+    params = {"token": APIFY_TOKEN}
+    payload = {
+        "categoryUrl": (
+            "https://www.oliveyoung.co.kr/store/display/getMCategoryList.do"
+            "?dispCatNo=100000100010013&prdSort=01&rowsPerPage=24"
+        ),
+        "maxPages": 5,
+    }
 
     try:
-        # 먼저 메인 페이지 방문 (자연스러운 접속처럼 보이게)
-        print("  🌐 올리브영 메인 페이지 방문 중...")
-        driver.get("https://www.oliveyoung.co.kr")
-        time.sleep(3)
+        # 동기 실행 (완료될 때까지 대기, 최대 5분)
+        resp = requests.post(run_url, params=params, json=payload, timeout=300)
+        resp.raise_for_status()
+        items = resp.json()
+        print(f"  ✅ {len(items)}개 상품 데이터 수신")
+        return items
 
-        for page in range(1, 6):
-            url = BASE_URL.format(page=page)
-            print(f"  📄 {page}페이지 접속 중...")
-            driver.get(url)
+    except requests.exceptions.Timeout:
+        print("  ⚠️ 타임아웃 - Actor 실행 시간이 너무 깁니다. 비동기 방식으로 재시도...")
+        return run_apify_async()
+    except Exception as e:
+        print(f"  ❌ Apify 호출 실패: {e}")
+        return None
 
-            # 상품 목록이 로드될 때까지 최대 15초 대기
-            try:
-                WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "ul.prod-list"))
-                )
-            except Exception:
-                print(f"  ⚠️ {page}페이지 로딩 타임아웃")
-                continue
 
-            soup = BeautifulSoup(driver.page_source, "html.parser")
-            items = soup.select("ul.prod-list > li")
+def run_apify_async():
+    """비동기 방식: Actor 실행 → 완료 대기 → 결과 수집"""
+    print("  🔄 비동기 방식으로 실행 중...")
 
-            if not items:
-                print(f"  ⚠️ {page}페이지: 상품 없음 (마지막 페이지일 수 있음)")
+    # 1. Actor 실행 시작
+    start_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs"
+    params = {"token": APIFY_TOKEN}
+    payload = {
+        "categoryUrl": (
+            "https://www.oliveyoung.co.kr/store/display/getMCategoryList.do"
+            "?dispCatNo=100000100010013&prdSort=01&rowsPerPage=24"
+        ),
+        "maxPages": 5,
+    }
+
+    try:
+        resp = requests.post(start_url, params=params, json=payload, timeout=30)
+        resp.raise_for_status()
+        run_id = resp.json()["data"]["id"]
+        print(f"  ▶️ 실행 ID: {run_id}")
+    except Exception as e:
+        print(f"  ❌ Actor 시작 실패: {e}")
+        return None
+
+    # 2. 완료될 때까지 폴링 (최대 5분)
+    status_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs/{run_id}"
+    for i in range(30):  # 10초 간격 × 30 = 5분
+        time.sleep(10)
+        try:
+            resp = requests.get(status_url, params=params, timeout=15)
+            status = resp.json()["data"]["status"]
+            print(f"  ⏳ 상태: {status} ({(i+1)*10}초 경과)")
+            if status == "SUCCEEDED":
                 break
+            elif status in ("FAILED", "ABORTED", "TIMED-OUT"):
+                print(f"  ❌ Actor 실패: {status}")
+                return None
+        except Exception:
+            continue
+    else:
+        print("  ❌ 5분 초과 - 타임아웃")
+        return None
 
-            for item in items:
-                try:
-                    rank_el = item.select_one(".prod-index")
-                    name_el = item.select_one(".prod-name")
-
-                    if not name_el:
-                        continue
-
-                    name = name_el.get_text(strip=True)
-                    if rank_el:
-                        rank_text = rank_el.get_text(strip=True).replace("위", "").strip()
-                        rank = int(rank_text) if rank_text.isdigit() else len(all_products) + 1
-                    else:
-                        rank = len(all_products) + 1
-
-                    all_products.append({"rank": rank, "name": name})
-
-                except Exception:
-                    continue
-
-            print(f"     → 누적 {len(all_products)}개 수집")
-            time.sleep(2)  # 페이지 간 간격
-
-    finally:
-        driver.quit()
-
-    return all_products
+    # 3. 결과 데이터 수집
+    dataset_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs/{run_id}/dataset/items"
+    try:
+        resp = requests.get(dataset_url, params=params, timeout=30)
+        resp.raise_for_status()
+        items = resp.json()
+        print(f"  ✅ {len(items)}개 상품 데이터 수신")
+        return items
+    except Exception as e:
+        print(f"  ❌ 데이터 수집 실패: {e}")
+        return None
 
 
-def match_targets(all_products):
+def extract_rank_and_name(item):
+    """Apify 결과 아이템에서 순위와 상품명 추출"""
+    # Actor마다 필드명이 다를 수 있으므로 여러 가능성 시도
+    name = (
+        item.get("productName") or
+        item.get("name") or
+        item.get("title") or
+        item.get("productTitle") or
+        ""
+    )
+    rank = (
+        item.get("rank") or
+        item.get("ranking") or
+        item.get("rankingPosition") or
+        None
+    )
+    return name, rank
+
+
+def match_targets(items):
+    """수신된 데이터에서 TARGET_PRODUCTS 키워드 매칭"""
     results = {}
+
+    # 순위가 없으면 리스트 순서로 대체
+    for idx, item in enumerate(items):
+        name, rank = extract_rank_and_name(item)
+        if rank is None:
+            item["_computed_rank"] = idx + 1
+        else:
+            item["_computed_rank"] = int(rank)
+
     for keyword in TARGET_PRODUCTS:
-        matched = next((p for p in all_products if keyword in p["name"]), None)
+        matched = next(
+            (item for item in items if keyword in extract_rank_and_name(item)[0]),
+            None
+        )
         if matched:
-            results[keyword] = {"matched_name": matched["name"], "rank": matched["rank"]}
-            print(f"  ✅ '{keyword}' → {matched['rank']}위 ({matched['name']})")
+            name, _ = extract_rank_and_name(matched)
+            rank = matched["_computed_rank"]
+            results[keyword] = {"matched_name": name, "rank": rank}
+            print(f"  ✅ '{keyword}' → {rank}위 ({name})")
         else:
             results[keyword] = {"matched_name": None, "rank": None}
-            print(f"  ❌ '{keyword}' → 50위 밖 또는 미발견")
+            print(f"  ❌ '{keyword}' → 범위 밖 또는 미발견")
+
     return results
 
 
@@ -139,19 +180,18 @@ def save(data):
 
 def main():
     print("=" * 50)
-    print("🌞 올리브영 선케어 랭킹 수집 시작")
+    print("🌞 올리브영 선케어 랭킹 수집 시작 (Apify)")
     print(f"   시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"   추적 키워드: {TARGET_PRODUCTS}")
     print("=" * 50)
 
-    all_products = fetch_ranking()
-    if not all_products:
-        print("❌ 수집 실패: 상품 목록이 비어있습니다.")
+    items = run_apify_actor()
+    if not items:
+        print("❌ 데이터 수집 실패")
         return
 
-    print(f"\n총 {len(all_products)}개 상품 수집 완료")
-    print("\n[타겟 상품 순위 확인]")
-    matched = match_targets(all_products)
+    print(f"\n[타겟 상품 순위 확인]")
+    matched = match_targets(items)
 
     data = load_existing()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
