@@ -1,0 +1,38 @@
+name: 올리브영 랭킹 수집
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # 매 정시마다 실행 (1시간마다)
+  workflow_dispatch:       # GitHub에서 수동으로도 실행 가능
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 저장소 코드 가져오기
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      # 2. Python 설치
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 3. 필요한 라이브러리 설치
+      - name: 라이브러리 설치
+        run: pip install requests beautifulsoup4
+
+      # 4. 크롤러 실행
+      - name: 랭킹 수집 실행
+        run: python crawler.py
+
+      # 5. 변경된 data.json을 저장소에 자동 커밋
+      - name: 데이터 저장 (자동 커밋)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data.json
+          git diff --staged --quiet || git commit -m "📊 랭킹 업데이트: $(date '+%Y-%m-%d %H:%M')"
+          git push
